@@ -42,6 +42,9 @@ route-catalog-lab/
 │   ├── service.py            три функції каталогу
 │   └── main.py               HTTP-ендпоінти
 ├── tests/                    автоматичні тести сервісу
+├── scripts/
+│   ├── serve.ps1             запуск сервера в потрібному режимі
+│   └── verify_api.py         повний прохід зовнішньої перевірки
 ├── stubs/responses.json      підготовлені відповіді моделі
 ├── evals/cases.json          10 випадків з очікуваннями
 ├── notebooks/
@@ -162,21 +165,25 @@ route-catalog-lab/
 ## Запуск сервісу
 
 ```powershell
-# Звичайний запуск (жива модель)
-.venv\Scripts\python.exe -m uvicorn app.main:app --port 8000
-
 # Детермінована перевірка: підготовлені відповіді
+.\scripts\serve.ps1 stub
+
+# Імітація недоступності моделі
+.\scripts\serve.ps1 offline
+
+# Звичайний запуск (жива модель)
+.\scripts\serve.ps1 live
+```
+
+Скрипт піднімає сервер на `http://127.0.0.1:8000` (довідка — `/docs`),
+виставляє `ROUTE_LLM_MODE` і `ROUTES_DB` і використовує **окреме сховище** для
+кожного режиму. Ручний запуск — тим самим:
+
+```powershell
 $env:ROUTE_LLM_MODE = "stub"
 $env:ROUTES_DB = "data/test-routes.json"
 .venv\Scripts\python.exe -m uvicorn app.main:app --port 8000
-
-# Імітація недоступності моделі
-$env:ROUTE_LLM_MODE = "offline"
-.venv\Scripts\python.exe -m uvicorn app.main:app --port 8000
 ```
-
-Сервер доступний на `http://127.0.0.1:8000`, довідка — на
-`http://127.0.0.1:8000/docs`.
 
 ---
 
@@ -186,20 +193,34 @@ $env:ROUTE_LLM_MODE = "offline"
 справжні HTTP-запити до запущеного сервера й **не імпортує** `app`,
 не використовує `TestClient` і не викликає провайдера LLM напряму.
 
-### Порядок проходу
-
-Перевірка потребує трьох запусків сервера, щоб кожен набір сценаріїв мав
-своє джерело відповіді AI-компонента.
-
-**Крок 1 — детерміновані сценарії (режим `stub`).**
+### Автоматичний прохід (рекомендовано)
 
 ```powershell
-$env:ROUTE_LLM_MODE = "stub"
-$env:ROUTES_DB = "data/test-routes.json"
-.venv\Scripts\python.exe -m uvicorn app.main:app --port 8000
+.venv\Scripts\python.exe scripts\verify_api.py
 ```
 
-У другому терміналі:
+Скрипт виконує весь notebook **в одному kernel-сеансі** з трьома запусками
+сервера (`stub` → `offline` → `live`) і зберігає notebook із фактичними
+результатами. Ядро лишається тим самим наскрізь, тому підсумкова таблиця
+містить усі дев'ять сценаріїв, а не лише останній прохід.
+
+Очікуваний результат: `Успішних: 9 | Невдалих: 0 | Невиконаних (not_run): 0`.
+
+### Ручний прохід (як у JupyterLab)
+
+| Крок | Режим сервера | Сховище | Сценарії |
+|---|---|---|---|
+| 1 | `stub` | `data/test-routes-stub.json` | список, ручне створення, хибний ручний вхід, усі AI-сценарії |
+| 2 | `offline` | `data/test-routes-offline.json` | збій моделі й незалежний ручний шлях |
+| 3 | `live` | `data/test-routes-live.json` | жива інтеграція через сервіс |
+
+**Крок 1.** В одному терміналі:
+
+```powershell
+.\scripts\serve.ps1 stub
+```
+
+У другому — JupyterLab:
 
 ```powershell
 .venv\Scripts\python.exe -m jupyter lab notebooks
@@ -207,27 +228,24 @@ $env:ROUTES_DB = "data/test-routes.json"
 
 Виконайте `notebooks/02_api_verification.ipynb` від початку до кінця.
 
-**Крок 2 — збій моделі (режим `offline`).**
-
-Зупиніть сервер, перезапустіть його в іншому режимі й на окремому сховищі:
+**Крок 2.** Зупиніть сервер (Ctrl+C), підніміть у іншому режимі:
 
 ```powershell
-$env:ROUTE_LLM_MODE = "offline"
-$env:ROUTES_DB = "data/test-routes-offline.json"
-.venv\Scripts\python.exe -m uvicorn app.main:app --port 8000
+.\scripts\serve.ps1 offline
 ```
 
-Виконайте в notebook лише сценарій «Збій моделі й незалежний ручний шлях».
+Перезапустіть у JupyterLab **тільки** комірку сценарію «Збій моделі й
+незалежний ручний шлях» (Shift+Enter). Ядро не перезапускайте — щоб
+`CASE_RESULTS` накопичувався.
 
-**Крок 3 — жива інтеграція (режим `live`).**
+**Крок 3.** Аналогічно:
 
 ```powershell
-$env:ROUTE_LLM_MODE = "live"
-$env:ROUTES_DB = "data/test-routes-live.json"
-.venv\Scripts\python.exe -m uvicorn app.main:app --port 8000
+.\scripts\serve.ps1 live
 ```
 
-Виконайте сценарій «Жива інтеграція через сервіс».
+Перезапустіть комірку «Жива інтеграція через сервіс», потім — підсумкову
+комірку з таблицею.
 
 ### Повторний прохід
 
@@ -239,6 +257,13 @@ $env:ROUTES_DB = "data/test-routes-live.json"
 Якщо користуєтеся спільним сховищем, порівнюйте стан до і після за
 **ідентифікаторами й полями**, а не лише за кількістю: кількість може не
 змінитися, поки запис було перезаписано.
+
+### У VS Code
+
+Якщо відкриваєте notebook у VS Code, виберіть kernel із віртуального
+середовища проєкту: `C:\ai-agents-lab\route-catalog-lab\.venv\Scripts\python.exe`
+(команда **Select Kernel → Python Environments…**). Інакше notebook не знайде
+`evals/cases.json` і не зможе викликати модель.
 
 ---
 
